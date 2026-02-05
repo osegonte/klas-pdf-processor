@@ -4,20 +4,16 @@ from pathlib import Path
 import tempfile
 from main import create_boxes
 
-st.set_page_config(page_title="PDF Boxes", page_icon="📦", layout="wide")
-
-# Session state
-if 'expanded' not in st.session_state:
-    st.session_state.expanded = set()
-if 'viewing' not in st.session_state:
-    st.session_state.viewing = None
+st.set_page_config(page_title="PDF Box Creator", page_icon="📦", layout="wide")
 
 st.title("PDF Box Creator")
-st.caption("Extract hierarchical structure from PDFs")
+st.caption("Team Sego format with PDF chunks")
 
 uploaded_file = st.file_uploader("Upload PDF", type=['pdf'])
 
 if uploaded_file:
+    material_id = st.text_input("Material ID (optional)", placeholder="Leave empty to auto-generate")
+    
     if st.button("Process PDF", type="primary"):
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
             tmp.write(uploaded_file.getvalue())
@@ -25,18 +21,76 @@ if uploaded_file:
         
         with st.spinner("Processing..."):
             try:
-                full_path, index_path = create_boxes(tmp_path)
+                boxes_json, chunks_dir = create_boxes(
+                    tmp_path,
+                    material_id=material_id if material_id else None
+                )
                 
-                with open(index_path) as f:
-                    index = json.load(f)
-                with open(full_path) as f:
-                    full = json.load(f)
+                with open(boxes_json) as f:
+                    data = json.load(f)
                 
-                st.session_state.index = index
-                st.session_state.full = full
-                st.session_state.expanded = set()
-                st.session_state.viewing = None
-                st.success("Processing complete")
+                st.success("Processing complete!")
+                
+                # Stats
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Pages", data['metadata']['total_pages'])
+                with col2:
+                    st.metric("Boxes", len(data['boxes']))
+                with col3:
+                    exercises = sum(1 for b in data['boxes'] if b['is_exercise'])
+                    st.metric("Exercises", exercises)
+                
+                st.divider()
+                
+                # Show boxes
+                st.subheader("Boxes")
+                
+                for box in data['boxes']:
+                    with st.expander(f"{box['box_type'].upper()}: {box['title']}"):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.write(f"**Pages:** {box['page_start']}-{box['page_end']}")
+                            st.write(f"**Type:** {box['box_type']}")
+                            st.write(f"**Words:** {box['metadata']['word_count']:,}")
+                            st.write(f"**Reading time:** {box['metadata']['estimated_reading_minutes']} min")
+                        
+                        with col2:
+                            st.write(f"**Has images:** {'Yes' if box['metadata']['has_images'] else 'No'}")
+                            st.write(f"**Has code:** {'Yes' if box['metadata']['has_code'] else 'No'}")
+                            st.write(f"**Chunk size:** {box['chunk_size_mb']} MB")
+                            
+                            # Download button for PDF chunk
+                            chunk_path = Path(boxes_json).parent / box['pdf_chunk_file']
+                            if chunk_path.exists():
+                                with open(chunk_path, 'rb') as f:
+                                    st.download_button(
+                                        "Download PDF Chunk",
+                                        f.read(),
+                                        file_name=f"{box['temp_id']}.pdf",
+                                        mime="application/pdf"
+                                    )
+                        
+                        st.text_area(
+                            "Preview",
+                            box['content_preview'],
+                            height=100,
+                            key=f"preview_{box['temp_id']}"
+                        )
+                        
+                        if box['is_exercise']:
+                            st.info(f"Exercise Type: {box['exercise_type']}")
+                
+                # Download full output
+                st.divider()
+                with open(boxes_json) as f:
+                    st.download_button(
+                        "Download boxes.json (Team Sego format)",
+                        f.read(),
+                        file_name="boxes.json",
+                        mime="application/json"
+                    )
                 
             except Exception as e:
                 st.error(f"Error: {e}")
@@ -44,140 +98,18 @@ if uploaded_file:
         
         Path(tmp_path).unlink(missing_ok=True)
 
-# Display results
-if 'index' in st.session_state:
-    index = st.session_state.index
-    full = st.session_state.full
-    
-    # Stats
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Pages", index['total_pages'])
-    with col2:
-        st.metric("Boxes", index['total_boxes'])
-    with col3:
-        st.metric("Levels", index['hierarchy_levels'])
-    with col4:
-        top = sum(1 for b in index['box_index'] if b['level'] == 1)
-        st.metric("Chapters", top)
-    
-    st.divider()
-    
-    # Build tree
-    def build_tree(boxes):
-        tree = {}
-        for box in boxes:
-            tree[box['box_id']] = {**box, 'children': []}
-        
-        roots = []
-        for box in boxes:
-            if box['parent_id'] is None:
-                roots.append(tree[box['box_id']])
-            else:
-                if box['parent_id'] in tree:
-                    tree[box['parent_id']]['children'].append(tree[box['box_id']])
-        
-        return roots
-    
-    # Render tree item
-    def render_item(node, level=0):
-        box_id = node['box_id']
-        has_children = len(node['children']) > 0
-        is_expanded = box_id in st.session_state.expanded
-        is_viewing = st.session_state.viewing == box_id
-        
-        # Indent
-        indent = "│   " * level
-        
-        # Build display line
-        if has_children:
-            icon = "▾ " if is_expanded else "▸ "
-        else:
-            icon = "  "
-        
-        display = f"{indent}{icon}{node['title']}"
-        page_info = f"p.{node['page_start']}-{node['page_end']}"
-        
-        # Create button for the item
-        col1, col2 = st.columns([0.85, 0.15])
-        
-        with col1:
-            if st.button(
-                display,
-                key=f"btn_{box_id}",
-                use_container_width=True,
-                type="secondary" if is_viewing else "secondary"
-            ):
-                if has_children:
-                    # Toggle expand
-                    if is_expanded:
-                        st.session_state.expanded.discard(box_id)
-                    else:
-                        st.session_state.expanded.add(box_id)
-                else:
-                    # Show content
-                    st.session_state.viewing = box_id
-                st.rerun()
-        
-        with col2:
-            st.caption(page_info)
-        
-        # Show content if viewing
-        if is_viewing and not has_children:
-            full_box = next(b for b in full['boxes'] if b['box_id'] == box_id)
-            
-            with st.container():
-                st.markdown("---")
-                st.subheader(full_box['title'])
-                st.caption(f"Pages {full_box['page_start']}-{full_box['page_end']} • {full_box['char_count']:,} characters")
-                
-                st.text_area(
-                    "Content",
-                    full_box['text'],
-                    height=500,
-                    key=f"content_{box_id}",
-                    label_visibility="collapsed"
-                )
-                
-                if st.button("Close", key=f"close_{box_id}"):
-                    st.session_state.viewing = None
-                    st.rerun()
-                
-                st.markdown("---")
-        
-        # Show children if expanded
-        if is_expanded and has_children:
-            for child in sorted(node['children'], key=lambda x: x['page_start']):
-                render_item(child, level + 1)
-    
-    # Render tree
-    st.subheader("Structure")
-    
-    roots = build_tree(index['box_index'])
-    for root in sorted(roots, key=lambda x: x['page_start']):
-        render_item(root, 0)
-    
-    # Downloads
-    st.divider()
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.download_button(
-            "Download Index",
-            data=json.dumps(index, indent=2, ensure_ascii=False),
-            file_name=f"{uploaded_file.name}_index.json",
-            mime="application/json",
-            use_container_width=True
-        )
-    
-    with col2:
-        st.download_button(
-            "Download Full Boxes",
-            data=json.dumps(full, indent=2, ensure_ascii=False),
-            file_name=f"{uploaded_file.name}_boxes.json",
-            mime="application/json",
-            use_container_width=True
-        )
-
 else:
     st.info("Upload a PDF to begin")
+    
+    with st.expander("Output Format"):
+        st.markdown("""
+        **Team Sego Compatible Output:**
+        - `boxes.json` - API-ready format
+        - `chunks/` - Individual PDF files for each box
+        
+        **Each box includes:**
+        - Content preview (200-500 chars)
+        - Actual PDF chunk (preserves images, formatting)
+        - Metadata (word count, images, code detection)
+        - Exercise detection
+        """)

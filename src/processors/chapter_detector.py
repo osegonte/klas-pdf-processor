@@ -1,6 +1,5 @@
 import re
 from typing import List, Dict, Optional, Tuple
-from src.models.contracts import Chapter
 
 class ChapterDetector:
     """Pure Python hierarchical chapter detection."""
@@ -47,7 +46,7 @@ class ChapterDetector:
         for item in toc_data:
             level, title, page_num = item[0], item[1], item[2]
             
-            if page_num > total_pages:
+            if page_num > total_pages or page_num < 1:
                 continue
             
             cleaned_title = self._clean_title(title)
@@ -117,7 +116,7 @@ class ChapterDetector:
                 continue
             
             page_num = int(page_match.group(1))
-            if page_num > total_pages:
+            if page_num > total_pages or page_num < 1:
                 continue
             
             # Extract title
